@@ -107,5 +107,25 @@ public class MeshSimulatorService {
         return m;
     }
 
+    /**
+     * Returns all packets held by devices with internet — these are what would
+     * be uploaded to the backend the moment they reach connectivity.
+     */
+    public List<BridgeUpload> collectBridgeUploads() {
+        List<BridgeUpload> out = new ArrayList<>();
+        for (VirtualDevice d : devices.values()) {
+            if (!d.hasInternet()) continue;
+            for (MeshPacket pkt : d.getHeldPackets()) {
+                out.add(new BridgeUpload(d.getDeviceId(), pkt));
+            }
+        }
+        return out;
+    }
+
+    public void resetMesh() {
+        devices.values().forEach(VirtualDevice::clear);
+    }
+
     public record GossipResult(int transfers, Map<String, Integer> deviceCounts) {}
+    public record BridgeUpload(String bridgeNodeId, MeshPacket packet) {}
 }
