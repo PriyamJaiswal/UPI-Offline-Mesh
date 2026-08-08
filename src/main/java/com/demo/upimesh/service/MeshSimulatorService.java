@@ -57,4 +57,55 @@ public class MeshSimulatorService {
         log.info("Packet {} injected at {} (TTL={})",
                 packet.getPacketId().substring(0, 8), senderDeviceId, packet.getTtl());
     }
+
+    /**
+     * One round of gossip. Every device shares everything it has with every
+     * other device. TTL is decremented per hop; packets at TTL 0 stay where
+     * they are but are not forwarded further.
+     *
+     * Real BLE gossip would be pair-by-pair when devices come into range.
+     * For the demo we let everyone gossip with everyone in one round, which
+     * is equivalent to "fast-forward N rounds of pairwise gossip".
+     */
+    public GossipResult gossipOnce() {
+        int transfers = 0;
+        List<VirtualDevice> deviceList = new ArrayList<>(devices.values());
+
+        // Snapshot what each device holds at the start of this round, so
+        // we don't gossip the same packet through 5 devices in 1 step.
+        Map<String, List<MeshPacket>> snapshot = new HashMap<>();
+        for (VirtualDevice d : deviceList) {
+            snapshot.put(d.getDeviceId(), new ArrayList<>(d.getHeldPackets()));
+        }
+
+        for (VirtualDevice src : deviceList) {
+            for (MeshPacket pkt : snapshot.get(src.getDeviceId())) {
+                if (pkt.getTtl() <= 0) continue;
+                for (VirtualDevice dst : deviceList) {
+                    if (dst == src) continue;
+                    if (dst.holds(pkt.getPacketId())) continue;
+                    MeshPacket copy = new MeshPacket();
+                    copy.setPacketId(pkt.getPacketId());
+                    copy.setTtl(pkt.getTtl() - 1);
+                    copy.setCreatedAt(pkt.getCreatedAt());
+                    copy.setCiphertext(pkt.getCiphertext());
+                    dst.hold(copy);
+                    transfers++;
+                }
+            }
+        }
+
+        log.info("Gossip round complete: {} packet transfers", transfers);
+        return new GossipResult(transfers, snapshotMap());
+    }
+
+    public Map<String, Integer> snapshotMap() {
+        Map<String, Integer> m = new LinkedHashMap<>();
+        for (VirtualDevice d : devices.values()) {
+            m.put(d.getDeviceId(), d.packetCount());
+        }
+        return m;
+    }
+
+    public record GossipResult(int transfers, Map<String, Integer> deviceCounts) {}
 }
