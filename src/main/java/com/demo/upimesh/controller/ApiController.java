@@ -26,6 +26,7 @@ public class ApiController {
     @Autowired private ServerKeyHolder serverKey;
     @Autowired private DemoService demo;
     @Autowired private MeshSimulatorService mesh;
+    @Autowired private BridgeIngestionService bridge;
     @Autowired private AccountRepository accountRepo;
     @Autowired private TransactionRepository txRepo;
     @Autowired private IdempotencyService idempotency;
@@ -101,6 +102,64 @@ public class ApiController {
                 "transfers", r.transfers(),
                 "deviceCounts", r.deviceCounts()
         );
+    }
+
+    /**
+     * "All bridge nodes simultaneously walk outside and get 4G."
+     * They all upload everything they hold to /api/bridge/ingest.
+     *
+     * THIS is the moment the duplicate-storm idempotency case is tested:
+     * if multiple bridge nodes hold the same packet, the server gets multiple
+     * concurrent POSTs of the same ciphertext, and only one should settle.
+     */
+    @PostMapping("/mesh/flush")
+    public Map<String, Object> meshFlush() {
+        List<MeshSimulatorService.BridgeUpload> uploads = mesh.collectBridgeUploads();
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        // Upload them in parallel to actually exercise concurrent idempotency.
+        uploads.parallelStream().forEach(up -> {
+            BridgeIngestionService.IngestResult r =
+                    bridge.ingest(up.packet(), up.bridgeNodeId(), 5 - up.packet().getTtl());
+            synchronized (results) {
+                results.add(Map.of(
+                        "bridgeNode", up.bridgeNodeId(),
+                        "packetId", up.packet().getPacketId().substring(0, 8),
+                        "outcome", r.outcome(),
+                        "reason", r.reason() == null ? "" : r.reason(),
+                        "transactionId", r.transactionId() == null ? -1 : r.transactionId()
+                ));
+            }
+        });
+
+        return Map.of(
+                "uploadsAttempted", uploads.size(),
+                "results", results
+        );
+    }
+
+    @PostMapping("/mesh/reset")
+    public Map<String, Object> meshReset() {
+        mesh.resetMesh();
+        idempotency.clear();
+        return Map.of("status", "mesh and idempotency cache cleared");
+    }
+
+    // -------------------------------------------------------------- bridge
+
+    /**
+     * THE PRODUCTION ENDPOINT.
+     * In a real deployment, the Android app's bridge logic POSTs here whenever
+     * the device has internet and is holding mesh packets.
+     */
+    @PostMapping("/bridge/ingest")
+    public ResponseEntity<?> ingest(
+            @RequestBody MeshPacket packet,
+            @RequestHeader(value = "X-Bridge-Node-Id", defaultValue = "unknown") String bridgeNodeId,
+            @RequestHeader(value = "X-Hop-Count", defaultValue = "0") int hopCount) {
+
+        BridgeIngestionService.IngestResult r = bridge.ingest(packet, bridgeNodeId, hopCount);
+        return ResponseEntity.ok(r);
     }
 
     // ------------------------------------------------------------- accounts
